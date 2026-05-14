@@ -9,15 +9,12 @@ on:
 
 jobs: 
   sync_with_upstream: 
-    name: Sync with Upstream 
+    name: 上游同步
     runs-on: ubuntu-latest 
     if: ${{ github.event.repository.fork }} 
 
     steps: 
-      - name: Checkout target repo 
-        uses: actions/checkout@v3
-  
-      - name: Sync Upstream 
+      - name: 同步 
         uses: tgymnich/fork-sync@v2.0.10
         with: 
           token: ${{ secrets.GITHUB_TOKEN }} 
@@ -25,8 +22,10 @@ jobs:
           repo: azerothcore-wotlk # 替换为上游仓库路径，例如：owner/repo 
           head: master # 上游分支名称 
           base: master # 目标分支名称 
-      
-      - name: Check for Failure 
+          merge_method: merge
+          auto_merge: true
+          
+      - name: 验证完整 
         if: failure() 
         run: | 
           echo "[Error] 自动更新失败，请手动同步。" 
