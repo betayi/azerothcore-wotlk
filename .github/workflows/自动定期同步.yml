@@ -1,5 +1,4 @@
-name: Upstream Sync 
-
+name: 自动定期同步
 permissions: 
   contents: write 
 
@@ -19,7 +18,7 @@ jobs:
         uses: actions/checkout@v3 
   
       - name: Sync Upstream 
-        uses: aormsby/Fork-Sync-With-Upstream-action@v3.4 
+        uses: bdougie/Fork-Sync-With-Upstream-action@fork
         with: 
           target_repo_token: ${{ secrets.GITHUB_TOKEN }} 
           upstream_sync_repo: azerothcore/azerothcore-wotlk # 替换为上游仓库路径，例如：owner/repo 
