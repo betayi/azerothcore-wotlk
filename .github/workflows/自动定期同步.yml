@@ -20,7 +20,7 @@ jobs:
       - name: Sync Upstream 
         uses: tgymnich/fork-sync@v2.0.10
         with: 
-          target_repo_token: ${{ secrets.GITHUB_TOKEN }} 
+          token: ${{ secrets.GITHUB_TOKEN }} 
           owner: azerothcore
           repo: azerothcore-wotlk # 替换为上游仓库路径，例如：owner/repo 
           head: master # 上游分支名称 
