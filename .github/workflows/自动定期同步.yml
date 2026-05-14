@@ -5,14 +5,11 @@ permissions:
 on: 
   schedule: 
     - cron: "0 0 * * *" # 每天 0 点运行 
-  workflow_dispatch: 
 
 jobs: 
   sync_with_upstream: 
     name: 上游同步
     runs-on: ubuntu-latest 
-    if: ${{ github.event.repository.fork }} 
-
     steps: 
       - name: 同步 
         uses: tgymnich/fork-sync@v2.0.10
