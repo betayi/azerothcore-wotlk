@@ -426,6 +426,12 @@ void WorldConfig::BuildConfigCache()
 
     SetConfigValue<uint32>(CONFIG_BATTLEGROUND_PREP_TIME, "Battleground.PrepTime", 120);
     SetConfigValue<uint32>(CONFIG_BATTLEGROUND_OVERRIDE_LOWLEVELS_MINPLAYERS, "Battleground.Override.LowLevels.MinPlayers", 0);
+    SetConfigValue<uint32>(CONFIG_BATTLEGROUND_OVERRIDE_LOWLEVELS_MINPLAYERS_AV, "Battleground.Override.LowLevels.MinPlayers.AV", 0);
+    SetConfigValue<uint32>(CONFIG_BATTLEGROUND_OVERRIDE_LOWLEVELS_MINPLAYERS_WS, "Battleground.Override.LowLevels.MinPlayers.WS", 0);
+    SetConfigValue<uint32>(CONFIG_BATTLEGROUND_OVERRIDE_LOWLEVELS_MINPLAYERS_AB, "Battleground.Override.LowLevels.MinPlayers.AB", 0);
+    SetConfigValue<uint32>(CONFIG_BATTLEGROUND_OVERRIDE_LOWLEVELS_MINPLAYERS_EY, "Battleground.Override.LowLevels.MinPlayers.EY", 0);
+    SetConfigValue<uint32>(CONFIG_BATTLEGROUND_OVERRIDE_LOWLEVELS_MINPLAYERS_SA, "Battleground.Override.LowLevels.MinPlayers.SA", 0);
+    SetConfigValue<uint32>(CONFIG_BATTLEGROUND_OVERRIDE_LOWLEVELS_MINPLAYERS_IC, "Battleground.Override.LowLevels.MinPlayers.IC", 0);
     SetConfigValue<bool>(CONFIG_BATTLEGROUND_DISABLE_QUEST_SHARE_IN_BG, "Battleground.DisableQuestShareInBG", false);
     SetConfigValue<bool>(CONFIG_BATTLEGROUND_DISABLE_READY_CHECK_IN_BG, "Battleground.DisableReadyCheckInBG", false);
     SetConfigValue<bool>(CONFIG_BATTLEGROUND_CAST_DESERTER, "Battleground.CastDeserter", true);
@@ -477,6 +483,7 @@ void WorldConfig::BuildConfigCache()
 
     SetConfigValue<bool>(CONFIG_OFFHAND_CHECK_AT_SPELL_UNLEARN, "OffhandCheckAtSpellUnlearn", true);
     SetConfigValue<bool>(CONFIG_CREATURE_REPOSITION_AGAINST_NPCS, "Creature.RepositionAgainstNpcs", true);
+    SetConfigValue<bool>(CONFIG_CREATURE_INSTANCE_TELEPORT_TO_UNREACHABLE_TARGET, "Creature.Instance.TeleportToUnreachableTarget", false);
     SetConfigValue<uint32>(CONFIG_CREATURE_STOP_FOR_PLAYER, "Creature.MovingStopTimeForPlayer", 180000);
 
     SetConfigValue<uint32>(CONFIG_WATER_BREATH_TIMER, "WaterBreath.Timer", 180000, ConfigValueCache::Reloadable::Yes, [](uint32 const& value) { return value > 0; }, "> 0");
