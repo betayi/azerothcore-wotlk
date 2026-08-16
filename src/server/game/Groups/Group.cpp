@@ -34,6 +34,7 @@
 #include "Player.h"
 #include "ScriptMgr.h"
 #include "SharedDefines.h"
+#include "TC9Sidecar.h"
 #include "UpdateFieldFlags.h"
 #include "Util.h"
 #include "World.h"
@@ -329,7 +330,7 @@ void Group::ConvertToRaid()
 
     _initRaidSubGroupsCounter();
 
-    if (!isBGGroup() && !isBFGroup())
+    if (!sToCloud9Sidecar->ClusterModeEnabled() && !isBGGroup() && !isBFGroup())
     {
         CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_GROUP_TYPE);
 
@@ -411,7 +412,7 @@ Player* Group::GetInvited(ObjectGuid guid) const
     return nullptr;
 }
 
-Player* Group::GetInvited(const std::string& name) const
+Player* Group::GetInvited(std::string const& name) const
 {
     for (InvitesList::const_iterator itr = m_invitees.begin(); itr != m_invitees.end(); ++itr)
     {
@@ -577,7 +578,53 @@ bool Group::AddMember(Player* player, uint8 roles /* = 0 */)
     return true;
 }
 
-bool Group::RemoveMember(ObjectGuid guid, const RemoveMethod& method /*= GROUP_REMOVEMETHOD_DEFAULT*/, ObjectGuid kicker /*= ObjectGuid::Empty*/, const char* reason /*= nullptr*/)
+void Group::AddMemberWithGuid(ObjectGuid guid)
+{
+    // Idempotent under sidecar event redelivery: never duplicate a MemberSlot.
+    if (IsMember(guid))
+        return;
+
+    if (Player* player = ObjectAccessor::FindPlayer(guid))
+    {
+        AddMember(player);
+        return;
+    }
+
+    // Get first not-full group
+    uint8 subGroup = 0;
+    if (m_subGroupsCounts)
+    {
+        bool groupFound = false;
+        for (; subGroup < MAX_RAID_SUBGROUPS; ++subGroup)
+        {
+            if (m_subGroupsCounts[subGroup] < MAXGROUPSIZE)
+            {
+                groupFound = true;
+                break;
+            }
+        }
+        // We are raid group and no one slot is free
+        if (!groupFound)
+            return;
+    }
+
+    MemberSlot member;
+    member.guid      = guid;
+    sCharacterCache->GetCharacterNameByGuid(guid, member.name);
+    member.group     = subGroup;
+    member.flags     = 0;
+    member.roles     = 0;
+    m_memberSlots.push_back(member);
+
+    if (!isBGGroup() && !isBFGroup())
+    {
+        sCharacterCache->UpdateCharacterGroup(guid, GetGUID());
+    }
+
+    SubGroupCounterIncrease(subGroup);
+}
+
+bool Group::RemoveMember(ObjectGuid guid, RemoveMethod const& method /*= GROUP_REMOVEMETHOD_DEFAULT*/, ObjectGuid kicker /*= ObjectGuid::Empty*/, char const* reason /*= nullptr*/)
 {
     BroadcastGroupUpdate();
 
@@ -588,8 +635,14 @@ bool Group::RemoveMember(ObjectGuid guid, const RemoveMethod& method /*= GROUP_R
         return m_memberSlots.size() > 0;
     }
 
-    // remove member and change leader (if need) only if strong more 2 members _before_ member remove (BG/BF allow 1 member group)
-    if (GetMembersCount() > ((isBGGroup() || isLFGGroup() || isBFGroup()) ? 1u : 2u))
+    // remove member and change leader (if need) only if strong more 2 members _before_ member remove (BG/BF allow 1 member group),
+    // except in cluster mode, where this branch is taken for any size: the group
+    // service owns the group lifecycle and local Disband() is a no-op, so always
+    // unlink the removed member here; waiting for the disband event leaves the
+    // last two members with a dangling group pointer whenever that event is lost
+    // (group service restart).
+    if (GetMembersCount() > ((isBGGroup() || isLFGGroup() || isBFGroup()) ? 1u : 2u)
+        || (sToCloud9Sidecar->ClusterModeEnabled() && !isBGGroup() && !isBFGroup()))
     {
         Player* player = ObjectAccessor::FindConnectedPlayer(guid);
         if (player)
@@ -609,19 +662,24 @@ bool Group::RemoveMember(ObjectGuid guid, const RemoveMethod& method /*= GROUP_R
                 player->UpdateForQuestWorldObjects();
             }
 
-            WorldPacket data;
-
-            if (method == GROUP_REMOVEMETHOD_KICK || method == GROUP_REMOVEMETHOD_KICK_LFG)
+            // BG/BF groups stay locally owned in cluster mode (see the gates above),
+            // so their removal packets must not be delegated to the group service.
+            if (!sToCloud9Sidecar->ClusterModeEnabled() || isBGGroup() || isBFGroup())
             {
-                data.Initialize(SMSG_GROUP_UNINVITE, 0);
-                player->SendDirectMessage(&data);
-            }
+                WorldPacket data;
 
-            // Do we really need to send this opcode?
-            data.Initialize(SMSG_GROUP_LIST, 1 + 1 + 1 + 1 + 8 + 4 + 4 + 8);
-            data << uint8(0x10) << uint8(0) << uint8(0) << uint8(0);
-            data << m_guid << uint32(m_counter) << uint32(0) << uint64(0);
-            player->SendDirectMessage(&data);
+                if (method == GROUP_REMOVEMETHOD_KICK || method == GROUP_REMOVEMETHOD_KICK_LFG)
+                {
+                    data.Initialize(SMSG_GROUP_UNINVITE, 0);
+                    player->GetSession()->SendPacket(&data);
+                }
+
+                // Do we really need to send this opcode?
+                data.Initialize(SMSG_GROUP_LIST, 1 + 1 + 1 + 1 + 8 + 4 + 4 + 8);
+                data << uint8(0x10) << uint8(0) << uint8(0) << uint8(0);
+                data << m_guid << uint32(m_counter) << uint32(0) << uint64(0);
+                player->GetSession()->SendPacket(&data);
+            }
         }
 
         // Remove player from group in DB
@@ -756,7 +814,7 @@ void Group::ChangeLeader(ObjectGuid newLeaderGuid)
     sScriptMgr->OnGroupChangeLeader(this, newLeaderGuid, m_leaderGuid); // This hook should be executed at the end - Not used anywhere in the original core
 }
 
-void Group::Disband(bool hideDestroy /* = false */)
+void Group::ForcedDisband(bool hideDestroy /* = false */)
 {
     sScriptMgr->OnGroupDisband(this);
 
@@ -852,11 +910,19 @@ void Group::Disband(bool hideDestroy /* = false */)
     delete this;
 }
 
+void Group::Disband(bool hideDestroy /* = false */)
+{
+    if (sToCloud9Sidecar->ClusterModeEnabled() && !this->isBFGroup() && !this->isBGGroup())
+        return;
+
+    ForcedDisband(hideDestroy);
+}
+
 /*********************************************************/
 /***                   LOOT SYSTEM                     ***/
 /*********************************************************/
 
-void Group::SendLootStartRoll(uint32 CountDown, uint32 mapid, const Roll& r)
+void Group::SendLootStartRoll(uint32 CountDown, uint32 mapid, Roll const& r)
 {
     WorldPacket data(SMSG_LOOT_START_ROLL, (8 + 4 + 4 + 4 + 4 + 4 + 4 + 1));
     data << r.itemGUID;                                     // guid of rolled item
@@ -1736,7 +1802,7 @@ void Group::CountTheRoll(Rolls::iterator rollI)
 
     if (Loot* loot = roll->getLoot(); loot && loot->isLooted() && loot->sourceGameObject)
     {
-        const GameObjectTemplate* goInfo = loot->sourceGameObject->GetGOInfo();
+        GameObjectTemplate const* goInfo = loot->sourceGameObject->GetGOInfo();
         if (goInfo && goInfo->type == GAMEOBJECT_TYPE_CHEST)
         {
             // Deactivate chest if the last item was rolled in group
@@ -1791,6 +1857,12 @@ void Group::SendTargetIconList(WorldSession* session)
 
 void Group::SendUpdate()
 {
+    if (sToCloud9Sidecar->ClusterModeEnabled() && !this->isBFGroup() && !this->isBGGroup())
+    {
+        // Group service responsible for sending these updates.
+        return;
+    }
+
     for (member_witerator witr = m_memberSlots.begin(); witr != m_memberSlots.end(); ++witr)
         SendUpdateToPlayer(witr->guid, &(*witr));
 }
@@ -2115,9 +2187,7 @@ GroupJoinBattlegroundResult Group::CanJoinBattlegroundQueue(Battleground const* 
         // check if someone in party is using dungeon system
         lfg::LfgState lfgState = sLFGMgr->GetState(member->GetGUID());
         if (lfgState > lfg::LFG_STATE_NONE && (lfgState != lfg::LFG_STATE_QUEUED || !sWorld->getBoolConfig(CONFIG_ALLOW_JOIN_BG_AND_LFG)))
-        {
             return ERR_LFG_CANT_USE_BATTLEGROUND;
-        }
 
         // pussywizard: prevent joining when any member is in bg/arena
         if (member->InBattleground())
@@ -2129,9 +2199,7 @@ GroupJoinBattlegroundResult Group::CanJoinBattlegroundQueue(Battleground const* 
 
         // don't let join if someone from the group is already in that bg queue
         if (member->InBattlegroundQueueForBattlegroundQueueType(bgQueueTypeId))
-        {
             return ERR_BATTLEGROUND_JOIN_FAILED;
-        }
 
         // don't let join if someone from the group is in bg queue random
         if (member->InBattlegroundQueueForBattlegroundQueueType(bgQueueTypeIdRandom))
@@ -2146,9 +2214,10 @@ GroupJoinBattlegroundResult Group::CanJoinBattlegroundQueue(Battleground const* 
             return ERR_GROUP_JOIN_BATTLEGROUND_FAIL;
 
         if (!member->GetBGAccessByLevel(bgTemplate->GetBgTypeID()))
-        {
             return ERR_BATTLEGROUND_JOIN_TIMED_OUT;
-        }
+
+        if (member->HasPlayerFlag(PLAYER_FLAGS_NO_PLAY_TIME)) // Assumed to only apply to full restriction rather than partial
+            return ERR_GROUP_JOIN_BATTLEGROUND_FAIL; // ERR_ARENA_EXPIRED_CAIS does not seem to be a result, so using this error instead
     }
 
     // for arenas: check party size is proper
@@ -2210,7 +2279,7 @@ void Roll::targetObjectBuildLink()
 void Group::SetDungeonDifficulty(Difficulty difficulty)
 {
     m_dungeonDifficulty = difficulty;
-    if (!isBGGroup() && !isBFGroup())
+    if (!sToCloud9Sidecar->ClusterModeEnabled() && !isBGGroup() && !isBFGroup())
     {
         CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_GROUP_DIFFICULTY);
 
@@ -2231,7 +2300,7 @@ void Group::SetDungeonDifficulty(Difficulty difficulty)
 void Group::SetRaidDifficulty(Difficulty difficulty)
 {
     m_raidDifficulty = difficulty;
-    if (!isBGGroup() && !isBFGroup())
+    if (!sToCloud9Sidecar->ClusterModeEnabled() && !isBGGroup() && !isBFGroup())
     {
         CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_GROUP_RAID_DIFFICULTY);
 
@@ -2445,7 +2514,7 @@ ObjectGuid Group::GetGUID() const
     return m_guid;
 }
 
-const char* Group::GetLeaderName() const
+char const* Group::GetLeaderName() const
 {
     return m_leaderName.c_str();
 }
@@ -2480,7 +2549,7 @@ bool Group::IsLeader(ObjectGuid guid) const
     return (GetLeaderGUID() == guid);
 }
 
-ObjectGuid Group::GetMemberGUID(const std::string& name)
+ObjectGuid Group::GetMemberGUID(std::string const& name)
 {
     for (member_citerator itr = m_memberSlots.begin(); itr != m_memberSlots.end(); ++itr)
         if (itr->name == name)
